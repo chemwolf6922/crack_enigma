@@ -4,7 +4,7 @@ CFLAGS=-O3 -MMD -MP
 LDFLAGS=
 LIBS=-lm enigma/libenigma.a
 
-APPSRCS=main.c entropy.c
+APPSRCS=main.c entropy.c heap.c
 
 all:app
 

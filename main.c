@@ -4,6 +4,7 @@
 #include "enigma/enigma.h"
 #include <malloc.h>
 #include <sys/time.h>
+#include "heap.h"
 
 const char test_text[] = "THEENIGMAMACHINEISACIPHERDEVICEDEVELOPEDANDUSEDINTHEEARLYTOMIDTHCENTURYTOPROTECTCOMMERCIALDIPLOMATICANDMILITARYCOMMUNICATIONITWASEMPLOYEDEXTENSIVELYBYNAZIGERMANYDURINGWORLDWARIIINALLBRANCHESOFTHEGERMANMILITARYTHEGERMANSBELIEVEDERRONEOUSLYTHATUSEOFTHEENIGMAMACHINEENABLEDTHEMTOCOMMUNICATESECURELYANDTHUSENJOYAHUGEADVANTAGEINWORLDWARIITHEENIGMAMACHINEWASCONSIDEREDTOBESOSECURETHATEVENTHEMOSTTOPSECRETMESSAGESWEREENCIPHEREDONITSELECTRICALCIRCUITSENIGMAHASANELECTROMECHANICALROTORMECHANISMTHATSCRAMBLESTHELETTERSOFTHEALPHABETINTYPICALUSEONEPERSONENTERSTEXTONTHEENIGMASKEYBOARDANDANOTHERPERSONWRITESDOWNWHICHOFLIGHTSABOVETHEKEYBOARDLIGHTSUPATEACHKEYPRESSIFPLAINTEXTISENTEREDTHELITUPLETTERSARETHEENCODEDCIPHERTEXTENTERINGCIPHERTEXTTRANSFORMSITBACKINTOREADABLEPLAINTEXTTHEROTORMECHANISMCHANGESTHEELECTRICALCONNECTIONSBETWEENTHEKEYSANDTHELIGHTSWITHEACHKEYPRESSTHESECURITYOFTHESYSTEMDEPENDSONASETOFMACHINESETTINGSTHATWEREGENERALLYCHANGEDDAILYDURINGTHEWARBASEDONSECRETKEYLISTSDISTRIBUTEDINADVANCEANDONOTHERSETTINGSTHATWERECHANGEDFOREACHMESSAGETHERECEIVINGSTATIONHASTOKNOWANDUSETHEEXACTSETTINGSEMPLOYEDBYTHETRANSMITTINGSTATIONTOSUCCESSFULLYDECRYPTAMESSAGEWHILEGERMANYINTRODUCEDASERIESOFIMPROVEMENTSTOENIGMAOVERTHEYEARSANDTHESEHAMPEREDDECRYPTIONEFFORTSTOVARYINGDEGREESTHEYDIDNOTPREVENTPOLANDFROMCRACKINGTHEMACHINEPRIORTOTHEWARENABLINGTHEALLIESTOEXPLOITENIGMAENCIPHEREDMESSAGESASAMAJORSOURCEOFINTELLIGENCEMANYCOMMENTATORSSAYTHEFLOWOFULTRACOMMUNICATIONSINTELLIGENCEFROMTHEDECRYPTIONOFENIGMALORENZANDOTHERCIPHERSSHORTENEDTHEWARSUBSTANTIALLYANDMAYEVENHAVEALTEREDITSOUTCOME";
 
@@ -13,8 +14,8 @@ typedef struct{
     float entropy;
 }enigma_key_result_t;
 
-enigma_key_t* crack_rotors(const char* cipher_text);
-int crack_plug_board(const char* cipher_text,enigma_key_t* key);
+enigma_key_result_t* crack_rotors(const char* cipher_text,int key_num);
+int crack_plug_board(const char* cipher_text,enigma_key_result_t* key_result);
 
 
 void dump_num(void *src, int len)
@@ -26,12 +27,37 @@ void dump_num(void *src, int len)
     printf("\n");
 }
 
+void dump_int(int *src, int len)
+{
+    for (int i = 0; i != len; i++)
+    {
+        printf("%02d ", *(src + i));
+    }
+    printf("\n");
+}
+
+void print_key_result(enigma_key_result_t* result)
+{
+    enigma_key_t* key = &result->key;
+    printf("Rotors:  %d %d %d\n",key->rotor_num[0]+1,key->rotor_num[1]+1,key->rotor_num[2]+1);
+    printf("Offsets: %c %c %c\n",key->rotor_offset[0]+'A',key->rotor_offset[1]+'A',key->rotor_offset[2]+'A');
+    printf("Plug board:\n");
+    for(int i=0;i!=26;i++)
+    {
+        printf("%c,",key->plug_board.key_map[i]+'A');
+    }
+    printf("\n");
+    printf("Entropy: %.4f\n",result->entropy);
+}
+
+
 int main(int argc,void* argv)
 {
+    
     enigma_t enigma;
     init_enigma(&enigma);
     // generate cipher text
-    set_enigma_key(&enigma,"524","EGB","NF,ID,OQ,XS,ZP,YJ,MV");
+    set_enigma_key(&enigma,"234","MIB","IR,YM,QK,JP,CH,GX,SD,NU,AZ,BV");
     char* cipher_text = (char*)malloc(sizeof(test_text));
     if(cipher_text == NULL)
     {
@@ -43,33 +69,49 @@ int main(int argc,void* argv)
     struct timeval start,stop;
     gettimeofday(&start,NULL);
     // crack rotors
-    enigma_key_t* key_crack = crack_rotors(cipher_text);
+    int num_of_keys = 100;
+    enigma_key_result_t* key_crack = crack_rotors(cipher_text,num_of_keys);
     if(key_crack == NULL)
     {
         free(cipher_text);
         return 0;
     }
     // crack plug board
-    if(crack_plug_board(cipher_text,key_crack)!=0)
+    for(int i=0;i!=num_of_keys;i++)
     {
-        free(cipher_text);
-        free(key_crack);
-        return 0;
+        crack_plug_board(cipher_text,&key_crack[i]);
+    }
+    // select best result
+    enigma_key_result_t* crack_result = &key_crack[0];
+    for(int i=1;i!=num_of_keys;i++)
+    {
+        if(key_crack[i].entropy < crack_result->entropy)
+        {
+            crack_result = &key_crack[i];
+        }
     }
     gettimeofday(&stop,NULL);
+    print_key_result(crack_result);
     printf("Time used to crack enigma: %.6fs\n",
             ((float)(stop.tv_sec*1000000+stop.tv_usec-start.tv_sec*1000000-start.tv_usec))*0.000001);
-
 
     free(key_crack);
     free(cipher_text);
     return 0;
 }
 
-enigma_key_t* crack_rotors(const char* cipher_text)
+bool compare_enigma_key_result(void* A,void* B)
+{
+    return ((enigma_key_result_t*)A)->entropy > ((enigma_key_result_t*)B)->entropy;
+}
+
+enigma_key_result_t* crack_rotors(const char* cipher_text,int key_num)
 {
     enigma_t enigma;
     init_enigma(&enigma);
+    // crate heap
+    heap_handle_t heap = NULL;
+    heap_create(&heap,key_num,sizeof(enigma_key_result_t),compare_enigma_key_result);
     // get cipher codes
     int code_len = strlen(cipher_text);
     uint8_t* cipher_codes = (uint8_t*)malloc(code_len);
@@ -88,9 +130,9 @@ enigma_key_t* crack_rotors(const char* cipher_text)
         return NULL;
     }
     // try keys with no plug board
-    enigma_key_result_t best_key = {
-        .entropy = 1000.0f,
-    };
+    // enigma_key_result_t best_key = {
+    //     .entropy = 1000.0f,
+    // };
     enigma_key_t key;
     for(int i=0;i!=26;i++)
     {
@@ -126,11 +168,17 @@ enigma_key_t* crack_rotors(const char* cipher_text)
                             memcpy(work_codes,cipher_codes,code_len);
                             enigma_encrypt_decrypt_direct(&enigma,work_codes,code_len);
                             float entropy = calculate_entropy_direct(work_codes,code_len);
-                            if(entropy < best_key.entropy)
-                            {
-                                memcpy(&best_key.key,&key,sizeof(key));
-                                best_key.entropy = entropy;
-                            }
+                            enigma_key_result_t result = {
+                                .entropy = entropy,
+                            };
+                            memcpy(&result.key,&key,sizeof(enigma_key_t));
+                            heap_add(heap,&result);
+                            // if(entropy < best_key.entropy)
+                            // {
+                            //     memcpy(&best_key.key,&key,sizeof(key));
+                            //     best_key.entropy = entropy;
+                            //     // TODO: save TOP K to avoid missing the right key
+                            // }
                         }
                     }
                 }
@@ -140,17 +188,18 @@ enigma_key_t* crack_rotors(const char* cipher_text)
     free(cipher_codes);
     free(work_codes);
 
-    printf("Best rotor result\nrotors: %d %d %d\noffset: %c %c %c\nEntropy: %.4f\n",
-            best_key.key.rotor_num[0]+1,best_key.key.rotor_num[1]+1,best_key.key.rotor_num[2]+1,
-            best_key.key.rotor_offset[0]+'A',best_key.key.rotor_offset[1]+'A',best_key.key.rotor_offset[2]+'A',
-            best_key.entropy);    
-    enigma_key_t* key_result = (enigma_key_t*)malloc(sizeof(enigma_key_t));
-    memcpy(key_result,&best_key.key,sizeof(enigma_key_t));
+    // printf("Best rotor result\nrotors: %d %d %d\noffset: %c %c %c\nEntropy: %.4f\n",
+    //         best_key.key.rotor_num[0]+1,best_key.key.rotor_num[1]+1,best_key.key.rotor_num[2]+1,
+    //         best_key.key.rotor_offset[0]+'A',best_key.key.rotor_offset[1]+'A',best_key.key.rotor_offset[2]+'A',
+    //         best_key.entropy);    
+    int temp;
+    enigma_key_result_t* key_result = heap_get_all(heap,&temp);
+    heap_delete(heap);
     return key_result;
 }
 
 /* This will write the plug board into the given key */
-int crack_plug_board(const char* cipher_text,enigma_key_t* key)
+int crack_plug_board(const char* cipher_text,enigma_key_result_t* key_result)
 {
     enigma_t enigma;
     init_enigma(&enigma);
@@ -172,6 +221,7 @@ int crack_plug_board(const char* cipher_text,enigma_key_t* key)
         return -1;
     }
     // set best key
+    enigma_key_t* key = &key_result->key;
     enigma_key_result_t best_key;
     memcpy(best_key.key.rotor_num,key->rotor_num,sizeof(best_key.key.rotor_num));
     memcpy(best_key.key.rotor_offset,key->rotor_offset,sizeof(best_key.key.rotor_offset));
@@ -226,20 +276,21 @@ int crack_plug_board(const char* cipher_text,enigma_key_t* key)
         }
         if(!new_wire_found)
         {
-            printf("Found %d wires\n",n-1);
+            // printf("Found %d wires\n",n-1);
             break;
         }
         else
         {
             wire->key_A = wire_found.key_A;
             wire->key_B = wire_found.key_B;
-            printf("Found wire: %c-%c ,Entropy: %.4f\n",
-                    wire_found.key_A+'A',wire_found.key_B+'A',best_key.entropy);
+            // printf("Found wire: %c-%c ,Entropy: %.4f\n",
+                    // wire_found.key_A+'A',wire_found.key_B+'A',best_key.entropy);
         }
     }
     free(work_codes);
     free(cipher_codes);
     // copy over results
     memcpy(key->plug_board.key_map,best_key.key.plug_board.key_map,26);
+    key_result->entropy = best_key.entropy;
     return 0;
 }
